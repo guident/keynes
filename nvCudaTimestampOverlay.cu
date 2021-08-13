@@ -88,20 +88,26 @@ post_process (void **sBaseAddr,
                 void ** usrptr)
 {
 
-	unsigned long long parsedTimestamp = 0LL;
+	counter++;
 
-	if (sformat[0] == COLOR_FORMAT_Y8) {
+	if ( counter % 30 == 0 ) {
 
-		for ( int I = 0; I < 64; I++ ) {
-			char * pixelPtr = (char *)sBaseAddr[0] + (100 * spitch[0]) + 100 + (4 * I);
-			if ( *pixelPtr < 128 ) {
-				parsedTimestamp |= (0x1LL << (63 - I));
+		unsigned long long parsedTimestamp = 0LL;
+
+		if (sformat[0] == COLOR_FORMAT_Y8) {
+
+			for ( int I = 0; I < 64; I++ ) {
+				char * pixelPtr = (char *)sBaseAddr[0] + (100 * spitch[0]) + 100 + (4 * I);
+				if ( *pixelPtr < 128 ) {
+					parsedTimestamp |= (0x1LL << (63 - I));
+				}
 			}
-		}
 
-		if ( counter % 30 == 0 ) {
-			//printf("HUH Thirty frames! Pitch: <<%d>> <<%d>> <<%d>> <<%d>> <<%d>> <<%d>> <<%d>>\n", sformat[0], sformat[1], COLOR_FORMAT_U8_V8, COLOR_FORMAT_RGBA, nsurfcount, spitch[0], spitch[1]);
-			printf("HUH Thirty frames: %llu\n", parsedTimestamp);
+			std::chrono::time_point<std::chrono::system_clock> now = std::chrono::system_clock::now();
+			auto duration = now.time_since_epoch();
+			unsigned long long micros = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
+
+			printf("HUH Thirty frames: %llu %llu %lld\n", micros, parsedTimestamp, (long long)(micros - parsedTimestamp));
 		}
 	}
 
@@ -126,11 +132,11 @@ __global__ void addTimestampOverlayKernel(int * pYPlanePtr, int * pUvPlanePtr, i
 	
 	} else {
 
-		int row = threadIdx.x + 46;
-		int column = threadIdx.y + 96;
+		int row = threadIdx.x + 50 - 4;
+		int column = threadIdx.y + 100;
 
   		char * pUvpixel = (char*)pUvPlanePtr + (row * pitch) + column;
-		*pUvpixel = 0;
+		*pUvpixel = 128;
 	}
 
 	return;
@@ -232,6 +238,7 @@ init (CustomerFunction * pFuncs)
   pFuncs->fPreProcess = pre_process;
   pFuncs->fGPUProcess = gpu_process;
   pFuncs->fPostProcess = post_process;
+  printf("libnvcuda_timestamp_overlay.so::init(): The video timestamp processing library has been initialized.\n");
 }
 
 extern "C" void
