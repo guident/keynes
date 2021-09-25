@@ -38,6 +38,7 @@
 #include "iva_metadata.h"
 
 
+unsigned char bits[64];
 unsigned long counter = 0L;
 
 /**
@@ -88,7 +89,6 @@ post_process (void **sBaseAddr,
                 void ** usrptr)
 {
 
-	counter++;
 
 	if ( counter % 30 == 0 ) {
 
@@ -105,9 +105,8 @@ post_process (void **sBaseAddr,
 
 			std::chrono::time_point<std::chrono::system_clock> now = std::chrono::system_clock::now();
 			auto duration = now.time_since_epoch();
-			unsigned long long micros = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
+			unsigned long long micros = std::chrono::duration_cast<std::chrono::microseconds>(duration).count();
 
-			printf("HUH Thirty frames: %llu %llu %lld\n", micros, parsedTimestamp, (long long)(micros - parsedTimestamp));
 		}
 	}
 
@@ -117,39 +116,23 @@ post_process (void **sBaseAddr,
 
 
 
-__global__ void addTimestampOverlayKernel(int * pYPlanePtr, int * pUvPlanePtr, int pitch, unsigned long long ts) {
+__global__ void retrieveTimestampBitKernel(int * pYPlanePtr, int * pUvPlanePtr, int pitch, bool * b) {
 
-	int bitNumber = 63 - (( threadIdx.y & 0x000000FF ) >> 2);
-	bool bitval = (( 1LL << bitNumber ) & ts ) == 0;
+	int bitNumber = 63 - threadIdx.x;
 
-	if ( threadIdx.x <= 3 ) {
+	double ysum = 0.0;
 
-		int row = threadIdx.x + 100;
-		int column = threadIdx.y + 100;
-
-  		char * pYpixel = (char*)pYPlanePtr + (row * pitch) + column;
-		if ( bitval ) *pYpixel = 255; else *pYpixel = 0;
-	
-	} 
-	
-
-	if ( threadIdx.x == 0 ) {
-
-		int row = 50;
-		int column = threadIdx.y + 100;
-
-  		char * pUvpixel = (char*)pUvPlanePtr + (row * pitch) + column;
-		*pUvpixel = 128;
+	for ( int I = 0; I < 4; I++ ) {
+		for ( int J = 0; J < 4; J++ ) {
+			char * pYpixel = (char *)pYPlanePtr + ((100 + I) * pitch) + (100 + (threadIdx.x * 4) + J); 
+			ysum += *pYpixel;
+		}
 	}
 
-	if ( threadIdx.x == 1 ) {
 
-		int row = 51;
-		int column = threadIdx.y + 100;
+	///ysum = 1.16 * (ysum - 256.0);
 
-  		char * pUvpixel = (char*)pUvPlanePtr + (row * pitch) + column;
-		*pUvpixel = 128;
-	}
+	if ( ysum >= (8.0 * 255.0) ) b[bitNumber] = true;
 
 	return;
 }
@@ -157,17 +140,11 @@ __global__ void addTimestampOverlayKernel(int * pYPlanePtr, int * pUvPlanePtr, i
 
 
 
-static int addTimestampOverlay(CUdeviceptr pYPlanePtr, CUdeviceptr pUvPlanePtr, int pitch){
+static int parseTimestampOverlay(CUdeviceptr pYPlanePtr, CUdeviceptr pUvPlanePtr, int pitch, bool * b){
 
-    std::chrono::time_point<std::chrono::system_clock> now = std::chrono::system_clock::now();
-    auto duration = now.time_since_epoch();
-    unsigned long long micros = std::chrono::duration_cast<std::chrono::milliseconds>(duration).count();
-
-    //printf("Thirty frames: %llu\n", micros);
-
-    dim3 threadsPerBlock(4,256);
-    dim3 blocks(1,1);
-    addTimestampOverlayKernel<<<blocks,threadsPerBlock>>>((int*)pYPlanePtr, (int*)pUvPlanePtr, pitch, micros);
+    dim3 threadsPerBlock(64);
+    dim3 blocks(1);
+    retrieveTimestampBitKernel<<<blocks,threadsPerBlock>>>((int*)pYPlanePtr, (int*)pUvPlanePtr, pitch, b);
 
     return 0;
 
@@ -192,9 +169,13 @@ gpu_process (EGLImageKHR image, void ** usrptr)
 
   counter++;
 
-  //if ( counter % 30 != 0 ) {
-//	  return;
-  //}
+  if ( (counter % 30) != 0 ) {
+	return;
+  }
+
+  std::chrono::time_point<std::chrono::system_clock> nowBeforeParse = std::chrono::system_clock::now();
+  auto durationBeforeParse = nowBeforeParse.time_since_epoch();
+  unsigned long long microsBeforeParse = std::chrono::duration_cast<std::chrono::milliseconds>(durationBeforeParse).count();
 
   cudaFree(0);
   status = cuGraphicsEGLRegisterImage(&pResource, image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
@@ -208,14 +189,20 @@ gpu_process (EGLImageKHR image, void ** usrptr)
     printf ("cuGraphicsSubResourceGetMappedArray failed\n");
   }
 
+  bool * deviceBits;
+
+  cudaMalloc((void **)&deviceBits, 64 * sizeof(bool));
+  cudaMemset(deviceBits, 0, 64 * sizeof(bool));
+   
   status = cuCtxSynchronize();
   if (status != CUDA_SUCCESS) {
     printf ("cuCtxSynchronize failed \n");
   }
 
+
   if (eglFrame.frameType == CU_EGL_FRAME_TYPE_PITCH) {
     if (eglFrame.eglColorFormat == CU_EGL_COLOR_FORMAT_YUV420_SEMIPLANAR) {
-      addTimestampOverlay((CUdeviceptr) eglFrame.frame.pPitch[0], (CUdeviceptr) eglFrame.frame.pPitch[1], eglFrame.pitch);
+      parseTimestampOverlay((CUdeviceptr) eglFrame.frame.pPitch[0], (CUdeviceptr) eglFrame.frame.pPitch[1], eglFrame.pitch, deviceBits);
     } else {
       printf ("Invalid eglcolorformat\n");
     }
@@ -235,17 +222,23 @@ gpu_process (EGLImageKHR image, void ** usrptr)
     printf ("cuCtxSynchronize failed after memcpy \n");
   }
 
+  bool hostBits[64];
+  cudaMemcpy(&hostBits[0], deviceBits, 64*sizeof(bool), cudaMemcpyDeviceToHost);
+
+  cudaFree(deviceBits);
+
+  unsigned long long ts = 0LL;
+  for ( int I = 0; I < 64; I++ ) {
+	if ( ! hostBits[I] ) {
+		ts |= ( 0x1LL << I );
+	}
+  }
+
+  printf("HUH Thirty frames: %llu %llu %lld\n", microsBeforeParse, ts, (long long)(microsBeforeParse - ts));
+
   status = cuGraphicsUnregisterResource(pResource);
   if (status != CUDA_SUCCESS) {
     printf("cuGraphicsEGLUnRegisterResource failed: %d \n", status);
-  }
-
-
-  if ( counter % 30 == 0 ) {
-  	std::chrono::time_point<std::chrono::system_clock> nowAfterOverlay = std::chrono::system_clock::now();
-  	auto durationAfterOverlay = nowAfterOverlay.time_since_epoch();
-  	unsigned long long microsAfterOverlay = std::chrono::duration_cast<std::chrono::milliseconds>(durationAfterOverlay).count();
-  	printf("Micros after overlay: %llu\n", microsAfterOverlay);
   }
 
 
@@ -254,9 +247,11 @@ gpu_process (EGLImageKHR image, void ** usrptr)
 extern "C" void
 init (CustomerFunction * pFuncs)
 {
-  pFuncs->fPreProcess = pre_process;
+  //pFuncs->fPreProcess = pre_process;
+  pFuncs->fPreProcess = NULL;
   pFuncs->fGPUProcess = gpu_process;
-  pFuncs->fPostProcess = post_process;
+  //pFuncs->fPostProcess = post_process;
+  pFuncs->fPostProcess = NULL;
   printf("libnvcuda_timestamp_overlay.so::init(): The video timestamp processing library has been initialized.\n");
 }
 

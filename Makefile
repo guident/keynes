@@ -101,8 +101,9 @@ ALL_LDFLAGS += $(addprefix -Xlinker ,$(LDFLAGS))
 ALL_LDFLAGS += $(addprefix -Xlinker ,$(EXTRA_LDFLAGS))
 
 # Common includes and paths for CUDA
-INCLUDES  := -I./
-LIBRARIES := -L$(LIB_DIR) -lEGL -lGLESv2
+# INCLUDES  := -I./ `pkg-config --cflags  gstreamer-1.0`
+INCLUDES  := -I./ -I/home/mtrank/gstreamer-1.17.90/include/gstreamer-1.0 -I/usr/include/glib-2.0 -I/usr/lib/aarch64-linux-gnu/glib-2.0/include
+LIBRARIES := `pkg-config --libs  gstreamer-1.0` -L$(LIB_DIR) -lEGL -lGLESv2
 LIBRARIES += -L$(TEGRA_LIB_DIR) -lcuda -lrt
 
 ################################################################################
@@ -129,7 +130,7 @@ endif
 # Target rules
 all: build
 
-build: libnvcuda_timestamp_overlay.so
+build: libnvcuda_timestamp_overlay.so libnvcuda_timestamp_parse.so
 
 nvCudaTimestampOverlay.o : nvCudaTimestampOverlay.cu
 	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
@@ -137,7 +138,13 @@ nvCudaTimestampOverlay.o : nvCudaTimestampOverlay.cu
 libnvcuda_timestamp_overlay.so : nvCudaTimestampOverlay.o
 	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $^ $(LIBRARIES)
 
+nvCudaTimestampParse.o : nvCudaTimestampParse.cu
+	$(NVCC) $(INCLUDES) $(ALL_CCFLAGS) $(GENCODE_FLAGS) -o $@ -c $<
+
+libnvcuda_timestamp_parse.so : nvCudaTimestampParse.o
+	$(NVCC) $(ALL_LDFLAGS) $(GENCODE_FLAGS) -o $@ $^ $(LIBRARIES)
+
 clean:
-	rm libnvcuda_timestamp_overlay.so nvCudaTimestampOverlay.o >/dev/null 2>&1
+	rm libnvcuda_timestamp_overlay.so nvCudaTimestampOverlay.o libnvcuda_timestamp_parse.so nvCudaTimestampParse.o  >/dev/null 2>&1
 
 clobber: clean
