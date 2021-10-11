@@ -39,7 +39,9 @@
 
 
 unsigned char bits[64];
-unsigned long counter = 0L;
+unsigned long frameCounter = 0L;
+unsigned long parseCounter = 0L;
+int parsePeriod = 30; // parse every 30 frames;
 
 /**
   * Dummy custom pre-process API implematation.
@@ -90,7 +92,7 @@ post_process (void **sBaseAddr,
 {
 
 
-	if ( counter % 30 == 0 ) {
+	if ( frameCounter % parsePeriod == 0 ) {
 
 		unsigned long long parsedTimestamp = 0LL;
 
@@ -167,15 +169,15 @@ gpu_process (EGLImageKHR image, void ** usrptr)
   CUeglFrame eglFrame;
   CUgraphicsResource pResource = NULL;
 
-  counter++;
+  frameCounter++;
 
-  if ( (counter % 30) != 0 ) {
+  if ( (frameCounter % parsePeriod) != 0 ) {
 	return;
   }
 
   std::chrono::time_point<std::chrono::system_clock> nowBeforeParse = std::chrono::system_clock::now();
   auto durationBeforeParse = nowBeforeParse.time_since_epoch();
-  unsigned long long microsBeforeParse = std::chrono::duration_cast<std::chrono::milliseconds>(durationBeforeParse).count();
+  unsigned long long millisBeforeParse = std::chrono::duration_cast<std::chrono::milliseconds>(durationBeforeParse).count();
 
   cudaFree(0);
   status = cuGraphicsEGLRegisterImage(&pResource, image, CU_GRAPHICS_MAP_RESOURCE_FLAGS_NONE);
@@ -227,14 +229,16 @@ gpu_process (EGLImageKHR image, void ** usrptr)
 
   cudaFree(deviceBits);
 
-  unsigned long long ts = 0LL;
+  unsigned long long parsedTimestampMillis = 0LL;
   for ( int I = 0; I < 64; I++ ) {
 	if ( ! hostBits[I] ) {
-		ts |= ( 0x1LL << I );
+		parsedTimestampMillis |= ( 0x1LL << I );
 	}
   }
 
-  printf("HUH Thirty frames: %llu %llu %lld\n", microsBeforeParse, ts, (long long)(microsBeforeParse - ts));
+  printf("%lu,%llu,%llu,%lld\n", parseCounter, millisBeforeParse, parsedTimestampMillis, (long long)(millisBeforeParse - parsedTimestampMillis));
+
+  parseCounter++;
 
   status = cuGraphicsUnregisterResource(pResource);
   if (status != CUDA_SUCCESS) {
